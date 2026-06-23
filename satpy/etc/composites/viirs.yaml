@@ -810,3 +810,27 @@ composites:
     prerequisites:
       - name: I05
     standard_name: night_ir105
+  
+
+    ash_index:
+      compositor: !!python/name:satpy.composites.arithmetic.DifferenceCompositor
+      prerequisites:
+        - name: M15
+        - compositor: !!python/name:satpy.composites.arithmetic.MaxCompositor
+          prerequisites:
+            - name: M14
+            - name: M15
+            - name: M16
+      standard_name: ash_index
+  
+  
+    so2_index:
+      compositor: !!python/name:satpy.composites.arithmetic.DifferenceCompositor
+      prerequisites:
+        - name: M14
+        - compositor: !!python/name:satpy.composites.arithmetic.MaxCompositor
+          prerequisites:
+            - name: M14
+            - name: M15
+            - name: M16
+      standard_name: so2_index
