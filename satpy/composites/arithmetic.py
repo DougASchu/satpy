@@ -75,3 +75,26 @@ class SumCompositor(CompositeBase):
         proj = projectables[0] + projectables[1]
         proj.attrs = info
         return proj
+
+
+class MaxCompositor(CompositeBase):
+    """Find the element-wise maximum across multiple data arrays."""
+
+    def __call__(self, projectables, nonprojectables=None, **info):
+        """Generate the composite."""
+        if len(projectables) < 2:
+            raise ValueError("Expected at least 2 datasets, got %d" % (len(projectables),))
+        projectables = self.match_data_arrays(projectables)
+        info = combine_metadata(*projectables)
+        info["name"] = self.attrs["name"]
+        info.update(self.attrs)
+
+        # Initialize with the first dataset
+        proj = projectables[0]
+        
+        # Sequentially compute the maximum against remaining datasets
+        for next_proj in projectables[1:]:
+            proj = proj.where(proj > next_proj, next_proj)
+
+        proj.attrs = info
+        return proj
