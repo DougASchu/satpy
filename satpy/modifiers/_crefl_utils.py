@@ -244,6 +244,22 @@ class _MODISCoefficients(_Coefficients):
     COEFF_INDEX_MAP[500] = COEFF_INDEX_MAP[1000]
     COEFF_INDEX_MAP[250] = COEFF_INDEX_MAP[1000]
 
+class _VIICoefficients(_Coefficients):
+    # Assume that the MODIS LUTs are good enough for METimage
+    LUTS = _MODISCoefficients.LUTS 
+    
+    # Map the METImage bands to MODIS
+    COEFF_INDEX_MAP = {
+        1000: {
+            WavelengthRange(0.650, 0.6680, 0.685): 0,  # vii_668  -> MODIS Band 1 index (Red)
+            WavelengthRange(0.840, 0.8650, 0.890): 1,  # vii_865  -> MODIS Band 2 index
+            WavelengthRange(0.430, 0.4430, 0.460): 2,  # vii_443  -> MODIS Band 3 index (Blue)
+            WavelengthRange(0.540, 0.5550, 0.570): 3,  # vii_555  -> MODIS Band 4 index (Green)
+            WavelengthRange(1.230, 1.2400, 1.250): 4,  # vii_1240 -> MODIS Band 5 index
+            WavelengthRange(1.580, 1.6100, 1.640): 5,  # vii_1630 -> MODIS Band 6 index
+            WavelengthRange(2.225, 2.2500, 2.275): 6,  # vii_2250 -> MODIS Band 7 index
+        }
+    }
 
 def run_crefl(refl,
               sensor_azimuth,
@@ -265,7 +281,10 @@ def run_crefl(refl,
     :param avg_elevation: average elevation (usually pre-calculated and stored in CMGDEM.hdf)
 
     """
-    runner_cls = _runner_class_for_sensor(refl.attrs["sensor"])
+    # Force the lookup string to lowercase so it safely finds "vii" in the router maps
+    sensor_key = str(refl.attrs.get("sensor", "vii")).lower()
+    
+    runner_cls = _runner_class_for_sensor(sensor_key)
     runner = runner_cls(refl)
     corr_refl = runner(sensor_azimuth, sensor_zenith, solar_azimuth, solar_zenith, avg_elevation)
     return corr_refl
@@ -348,6 +367,21 @@ class _VIIRSCREFLRunner(_VIIRSMODISCREFLRunner):
         return super()._run_crefl(mus, muv, phi, solar_zenith, sensor_zenith, height, coeffs)
 
 
+class _VIICREFLRunner(_VIIRSMODISCREFLRunner):
+    @property
+    def coeffs_cls(self) -> Type[_Coefficients]:
+        return _VIICoefficients
+
+    def _run_crefl(self, mus, muv, phi, solar_zenith, sensor_zenith, height, coeffs):
+        LOG.debug("Executing integrated VII CREFL runner path using MODIS physics")
+        # STEP 3: Pass "modis" down instead of "viirs"
+        # This forces the use of _MODISAtmosphereVariables and UO3_MODIS (0.319)
+        return da.map_blocks(_run_crefl, self._refl.data, mus.data, muv.data, phi.data,
+                             height, "modis", *coeffs,
+                             meta=np.ndarray((), dtype=self._refl.dtype),
+                             chunks=self._refl.chunks, dtype=self._refl.dtype,
+                             )
+
 class _MODISCREFLRunner(_VIIRSMODISCREFLRunner):
     @property
     def coeffs_cls(self) -> Type[_Coefficients]:
@@ -362,6 +396,7 @@ _SENSOR_TO_RUNNER = {
     "abi": _ABICREFLRunner,
     "viirs": _VIIRSCREFLRunner,
     "modis": _MODISCREFLRunner,
+    "vii": _VIICREFLRunner,
 }
 
 
