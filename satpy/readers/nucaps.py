@@ -12,7 +12,7 @@ parameters such as relative humidity and boundary layer temperature.
 
 NUCAPS data is derived from Cross-track Infrared Sounder (CrIS) data, and
 from Advanced Technology Microwave Sounder (ATMS) data, instruments
-onboard Joint Polar Satellite System spacecraft.
+onboard Joint Polar Satellite System spacecraft, as well as MetOp spacecraft (IASI/AMSU).
 
 """
 
@@ -121,7 +121,7 @@ class NUCAPSFileHandler(NetCDF4FileHandler):
             if len(res) == 1:
                 return res[0].lower()
         except KeyError:
-            res = ["CrIS", "ATMS", "VIIRS"]
+            res = ["CrIS", "ATMS", "VIIRS", "IASI", "AMSU-A", "MHS"]
         return set(name.lower() for name in res)
 
     def get_shape(self, ds_id, ds_info):
@@ -136,6 +136,9 @@ class NUCAPSFileHandler(NetCDF4FileHandler):
                 shape = shape[1:]
             if "pressure_index" in ds_info:
                 shape = shape[:-1]
+            if "slice" in ds_info:
+                # Reduce dimension shape count for each sliced dimension
+                shape = (shape[0],) if len(shape) > 1 else shape
         return shape
 
     def get_metadata(self, dataset_id, ds_info):
@@ -177,6 +180,11 @@ class NUCAPSFileHandler(NetCDF4FileHandler):
         fill_value = self.get(var_path + "/attr/_FillValue")
 
         d_tmp = self[var_path]
+
+        # Handle custom slices specified in dataset YAML (e.g., Stability parameters)
+        if "slice" in ds_info and isinstance(ds_info["slice"], dict):
+            d_tmp = d_tmp.isel(**ds_info["slice"])
+
         if "index" in ds_info:
             d_tmp = d_tmp[int(ds_info["index"])]
         if "pressure_index" in ds_info:
@@ -187,9 +195,13 @@ class NUCAPSFileHandler(NetCDF4FileHandler):
             # Older format
             if "number_of_FORs" in sp.dims:
                 sp = sp.rename({"number_of_FORs": "y"})
-            # Newer format
+            # Newer format (JPSS)
             if "Number_of_CrIS_FORs" in sp.dims:
                 sp = sp.rename({"Number_of_CrIS_FORs": "y"})
+            # MetOp format (IASI/AMSU)
+            if "Number_of_Dice" in sp.dims:
+                sp = sp.rename({"Number_of_Dice": "y"})
+
             if "surface_pressure" in ds_info:
                 ds_info["surface_pressure"] = xr.concat((ds_info["surface_pressure"], sp), dim="y")
             else:
@@ -211,9 +223,12 @@ class NUCAPSFileHandler(NetCDF4FileHandler):
         # Older format
         if "number_of_FORs" in data.dims:
             data = data.rename({"number_of_FORs": "y"})
-        # Newer format
+        # Newer format (JPSS)
         if "Number_of_CrIS_FORs" in data.dims:
             data = data.rename({"Number_of_CrIS_FORs": "y"})
+        # MetOp format (IASI/AMSU)
+        if "Number_of_Dice" in data.dims:
+            data = data.rename({"Number_of_Dice": "y"})
         return data
 
 
