@@ -581,9 +581,14 @@ class Scene:
 
         return datasets_by_area.items()
 
+    # 8< v1.0
     def keys(self, **kwargs):
         """Get DataID keys for the underlying data container."""
         return self._datasets.keys(**kwargs)
+    # >8 v1.0
+    # def keys(self):
+    #     """Get DataID keys for the underlying data container."""
+    #     return self._datasets.keys()
 
     def values(self):
         """Get values for the underlying data container."""
@@ -1061,7 +1066,6 @@ class Scene:
         """Convert satpy Scene to geoviews.
 
         Args:
-            scn: Satpy Scene.
             gvtype:
                 One of gv.Image, gv.LineContours, gv.FilledContours, gv.Points
                 Default to :class:`geoviews.Image <geoviews.element.geo.Image>`.
@@ -1093,7 +1097,6 @@ class Scene:
         """Convert satpy Scene to Hvplot. The method could not be used with composites of swath data.
 
         Args:
-            scn (satpy.scene.Scene): Satpy Scene.
             datasets (list): Limit included products to these datasets.
             args: Arguments coming from hvplot
             kwargs: hvplot options dictionary.
@@ -1347,8 +1350,8 @@ class Scene:
         new_scn = self.copy()
         datasets = compute(*(new_scn._datasets.values()), **kwargs)
 
-        for i, k in enumerate(new_scn._datasets.keys()):
-            new_scn[k] = datasets[i]
+        for k, ds in zip(new_scn._datasets.keys(), datasets):
+            new_scn[k] = ds
 
         return new_scn
 
@@ -1361,8 +1364,8 @@ class Scene:
         new_scn = self.copy()
         datasets = persist(*(new_scn._datasets.values()), **kwargs)
 
-        for i, k in enumerate(new_scn._datasets.keys()):
-            new_scn[k] = datasets[i]
+        for k, ds in zip(new_scn._datasets.keys(), datasets):
+            new_scn[k] = ds
 
         return new_scn
 

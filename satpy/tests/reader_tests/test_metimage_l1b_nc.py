@@ -6,6 +6,7 @@ This version tests the readers for METimage.
 
 
 import datetime
+import shutil
 
 import dask
 import dask.array as da
@@ -31,6 +32,7 @@ NUM_TIE_POINTS_ALT = NUM_SCANS * SCAN_ALT_TIE_POINTS
 COUNTS_FILL = np.uint16(8191)
 COUNTS_SCALE = np.float32(0.00235)
 COUNTS_OFFSET = np.float32(0.105)
+DELTA_FILL = np.float32(-9999.0)
 
 
 def _counts_raw():
@@ -55,9 +57,13 @@ def _add_counts_variable(measurement):
     counts[:] = _counts_raw()
 
 
-def _create_l1b_file(path, with_tie_points=True,
+def _create_l1b_file(path, with_tie_points=True, unlimited=False,
                      solar_irradiance_name="band_averaged_solar_irradiance"):
-    """Write a small METimage L1B file with realistic dimensions and on-disk chunking."""
+    """Write a small METimage L1B file with realistic dimensions and on-disk chunking.
+
+    With ``unlimited``, the row dimensions are unlimited, as in the real files.
+
+    """
     with Dataset(path, "w") as nc:
         nc.sensing_start_time_utc = "20170920173040.888"
         nc.sensing_end_time_utc = "20170920174117.555"
@@ -68,7 +74,7 @@ def _create_l1b_file(path, with_tie_points=True,
         data.createDimension("num_chan_solar", 11)
         data.createDimension("num_chan_thermal", 9)
         data.createDimension("num_pixels", NUM_PIXELS)
-        data.createDimension("num_lines", NUM_LINES)
+        data.createDimension("num_lines", None if unlimited else NUM_LINES)
 
         calibration = data.createGroup("calibration_data")
         for name, dim, size in (("bt_conversion_a", "num_chan_thermal", 9),
@@ -95,18 +101,20 @@ def _create_l1b_file(path, with_tie_points=True,
         _add_counts_variable(measurement)
         delta_lat = measurement.createVariable("delta_lat_N_dem", np.float32,
                                                dimensions=("num_lines", "num_pixels"),
-                                               chunksizes=(1, NUM_PIXELS))
+                                               chunksizes=(1, NUM_PIXELS),
+                                               fill_value=DELTA_FILL)
         delta_lat[:] = 1.0
         delta_lon = measurement.createVariable("delta_lon_E_dem", np.float32,
                                                dimensions=("num_lines", "num_pixels"),
-                                               chunksizes=(1, NUM_PIXELS))
+                                               chunksizes=(1, NUM_PIXELS),
+                                               fill_value=DELTA_FILL)
         delta_lon[:] = 2.0
 
         if not with_tie_points:
             return
 
         measurement.createDimension("num_tie_points_act", NUM_TIE_POINTS_ACT)
-        measurement.createDimension("num_tie_points_alt", NUM_TIE_POINTS_ALT)
+        measurement.createDimension("num_tie_points_alt", None if unlimited else NUM_TIE_POINTS_ALT)
         tie_shape = (NUM_TIE_POINTS_ALT, NUM_TIE_POINTS_ACT)
         tie_dims = ("num_tie_points_alt", "num_tie_points_act")
         lon = measurement.createVariable("longitude", np.float32, dimensions=tie_dims,
@@ -210,6 +218,24 @@ def test_perform_orthorectification_lon(reader):
                                   (MEAN_EARTH_RADIUS*np.cos(np.radians(reader.latitude))))
                        + np.ones((NUM_LINES, NUM_PIXELS)))
     np.testing.assert_allclose(orthorect_variable.values, expected_values)
+
+
+def test_perform_orthorectification_partially_invalid(metimage_l1b_file, tmp_path):
+    """Test that the pixels with invalid delta data are left uncorrected."""
+    mod_filepath = tmp_path / "metimage_l1b_modified.nc"
+    shutil.copy2(metimage_l1b_file, mod_filepath)
+    # swap a row with invalid numbers
+    with Dataset(mod_filepath, "a") as nc:
+        var = nc["data/measurement_data"]["delta_lat_N_dem"]
+        var[0, :] = np.ma.masked
+
+    reader = _make_handler(mod_filepath)
+
+    orthorect_variable = reader._perform_orthorectification(_make_variable(), "data/measurement_data/delta_lat_N_dem")
+
+    np.testing.assert_allclose(orthorect_variable[0], 1.0)  # row 0 should be unchanged
+    np.testing.assert_allclose(orthorect_variable[1:],
+                               np.degrees(1.0 / MEAN_EARTH_RADIUS) + 1.0)  # all others corrected
 
 
 def test_radiance_calibration_returns_input(reader):
@@ -316,16 +342,35 @@ DATASET_INFOS = [
 ]
 
 
+@pytest.mark.parametrize("unlimited", [False, True], ids=["fixed", "unlimited"])
 @pytest.mark.parametrize(("chunk_size", "expected_row_chunks"), CHUNK_CASES)
 @pytest.mark.parametrize("dataset_info", DATASET_INFOS, ids=lambda info: info["name"])
-def test_datasets_are_chunked_by_whole_scans(metimage_l1b_file, dataset_info,
-                                             chunk_size, expected_row_chunks):
+def test_datasets_are_chunked_by_whole_scans(tmp_path, dataset_info, chunk_size, expected_row_chunks, unlimited):
     """Test that every dataset keeps whole rows of pixels and is chunked in whole scans."""
+    path = tmp_path / "metimage_l1b.nc"
+    _create_l1b_file(path, unlimited=unlimited)
     with dask.config.set({"array.chunk-size": chunk_size}):
-        handler = _make_handler(metimage_l1b_file)
+        handler = _make_handler(path)
         variable = handler.get_dataset(None, dataset_info)
 
     assert variable.chunks == (expected_row_chunks, (NUM_PIXELS,))
+
+
+@pytest.mark.parametrize("unlimited", [False, True], ids=["fixed", "unlimited"])
+def test_dim_sizes_are_found_without_walking_the_file(tmp_path, unlimited):
+    """Test that the dimension sizes are looked up in the parent groups of the variables without walking the file."""
+    path = tmp_path / "metimage_l1b.nc"
+    _create_l1b_file(path, unlimited=unlimited)
+
+    handler = _make_handler(path)
+
+    assert handler.file_content._file_keys is None
+    assert handler._collect_dim_sizes() == {
+        "num_lines": NUM_LINES,
+        "num_pixels": NUM_PIXELS,
+        "num_tie_points_alt": NUM_TIE_POINTS_ALT,
+        "num_tie_points_act": NUM_TIE_POINTS_ACT,
+    }
 
 
 def test_file_without_tie_points_is_still_chunked(tmp_path):
