@@ -1,20 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-#
-# Copyright (c) 2020 Satpy developers
-#
-# satpy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# satpy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with satpy.  If not, see <http://www.gnu.org/licenses/>.
 
 """The vii_2_nc reader tests package."""
 
@@ -28,13 +11,13 @@ import numpy as np
 import xarray as xr
 from netCDF4 import Dataset
 
-from satpy.readers.vii_l2_nc import ViiL2NCFileHandler
+from satpy.readers.metimage_l2_nc import METimageL2NCFileHandler
 
 TEST_FILE = "test_file_vii_l2_nc.nc"
 
 
-class TestViiL2NCFileHandler(unittest.TestCase):
-    """Test the ViiL2NCFileHandler reader."""
+class TestMETimageL2NCFileHandler(unittest.TestCase):
+    """Test the METimageL2NCFileHandler reader."""
 
     def setUp(self):
         """Set up the test."""
@@ -46,18 +29,18 @@ class TestViiL2NCFileHandler(unittest.TestCase):
             # Create data group
             g1 = nc.createGroup("data")
 
-            # Add dimensions to data group
-            g1.createDimension("num_pixels", 100)
-            g1.createDimension("num_lines", 10)
-
             # Create measurement_data group
             g1_2 = g1.createGroup("measurement_data")
+
+            # Add dimensions to data/measurement_data group, where the real L2 products define them
+            g1_2.createDimension("num_pixels", 100)
+            g1_2.createDimension("num_lines", 10)
 
             # Add variables to data/measurement_data group
             delta_lat = g1_2.createVariable("delta_lat", np.float32, dimensions=("num_lines", "num_pixels"))
             delta_lat[:] = 0.1
 
-        self.reader = ViiL2NCFileHandler(
+        self.reader = METimageL2NCFileHandler(
             filename=self.test_file_name,
             filename_info={
                 "creation_time": datetime.datetime(year=2017, month=9, day=22,
