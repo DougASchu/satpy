@@ -23,7 +23,7 @@ class VIIRSEDRFlood(BaseFileHandler):
 
     # Uniform X width (> max single-granule width) so Satpy can concatenate
     # heterogeneous cropped flood granules along 'y' into one pass swath.
-    MAX_SWATH_WIDTH = 26000
+    MAX_SWATH_WIDTH = 45000
 
     def __init__(self, filename, filename_info, filetype_info):
         super().__init__(filename, filename_info, filetype_info)
