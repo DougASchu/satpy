@@ -21,14 +21,27 @@ logger = logging.getLogger(__name__)
 class VIIRSEDRFlood(BaseFileHandler):
     """File handler for VIIRS NetCDF Flood granules."""
 
-    # Uniform X width (> max single-granule width) so Satpy can concatenate
-    # heterogeneous cropped flood granules along 'y' into one pass swath.
-    MAX_SWATH_WIDTH = 45000
+    # Tracks the maximum 'lon' width seen across instantiated granules per platform
+    # so xarray.concat(..., dim='y') aligns CONUS, Alaska, and trans-polar passes dynamically.
+    _max_width_by_platform: dict[str, int] = {}
 
     def __init__(self, filename, filename_info, filetype_info):
         super().__init__(filename, filename_info, filetype_info)
         self.nc = xr.open_dataset(self.filename, decode_times=False, mask_and_scale=False)
         self._cached_grid = None
+
+        platform = str(
+            self.filename_info.get("platform_shortname")
+            or self.filename_info.get("platform_name")
+            or getattr(self.nc, "platform", "default")
+        ).lower()
+        self._platform_key = platform
+
+        if "lon" in self.nc.dims:
+            width = int(self.nc.dims["lon"])
+            prev_max = self._max_width_by_platform.get(self._platform_key, 0)
+            if width > prev_max:
+                self._max_width_by_platform[self._platform_key] = width
 
     def _parse_datetime(self, key):
         val = self.filename_info.get(key)
@@ -91,8 +104,8 @@ class VIIRSEDRFlood(BaseFileHandler):
                 lons_2d[invalid_mask] = np.nan
                 lats_2d[invalid_mask] = np.nan
 
-        # Pad X with NaNs so pyresample ignores padded cells while Satpy stacks granules along 'y'
-        target_width = max(self.MAX_SWATH_WIDTH, width)
+        # Pad X with NaNs to the widest granule in this pass so Satpy stacks along 'y'
+        target_width = max(self._max_width_by_platform.get(self._platform_key, width), width)
         if width < target_width:
             pad_cols = target_width - width
             lons_2d = np.pad(lons_2d, ((0, 0), (0, pad_cols)), constant_values=np.nan)
