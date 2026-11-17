@@ -11,11 +11,19 @@ file_types:
     viirs_edr:
         file_reader: !!python/name:satpy.readers.viirs_edr_flood.VIIRSEDRFlood
         file_patterns:
-            - '{prefix:?}VIIRS-Flood-{aoi}_{version}_{platform_shortname}_s{start_time}_e{end_time}_c{creation_time}.nc'
+            - 'VIIRS-Flood_{version}_{platform_shortname}_s{start_time:%Y%m%d%H%M%S%f:14s}_e{end_time:%Y%m%d%H%M%S%f:14s}_c{creation_time:%Y%m%d%H%M%S%f:14s}.nc'
+            - 'VIIRS-Flood_{version}_{platform_shortname}_s{start_time}_e{end_time}_c{creation_time}.nc'
+            - 'VIIRS-Flood-{aoi}_{version}_{platform_shortname}_s{start_time:%Y%m%d%H%M%S%f:14s}_e{end_time:%Y%m%d%H%M%S%f:14s}_c{creation_time:%Y%m%d%H%M%S%f:14s}.nc'
+            - 'VIIRS-Flood-{aoi}_{version}_{platform_shortname}_s{start_time}_e{end_time}_c{creation_time}.nc'
 
 datasets:
     water_detection:
         name: 'WaterDetection'
+        file_type: viirs_edr
+        coordinates: [longitude, latitude]
+
+    quality_flag:
+        name: 'QualityFlag'
         file_type: viirs_edr
         coordinates: [longitude, latitude]
 
