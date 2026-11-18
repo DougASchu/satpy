@@ -89,6 +89,10 @@ class VIIRSEDRFlood(BaseFileHandler):
         if max_lat_edge is not None and abs(lats[0] - float(max_lat_edge)) < 0.25 * lat_res:
             lats = lats - 0.5 * lat_res
 
+        # Wrap 0..360 longitudes (e.g. 180..251.9 over Alaska) into [-180, 180)
+        # so pyresample's KD-tree maps across the antimeridian seamlessly.
+        lons = ((lons + 180.0) % 360.0) - 180.0
+
         lons_2d, lats_2d = np.meshgrid(lons, lats)
 
         # Mask coordinates to NaN wherever WaterDetection == _FillValue (1 = no_valid_data)
