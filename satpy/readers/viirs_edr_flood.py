@@ -1,21 +1,20 @@
-#!/usr/bin/env python3
-# Copyright (C) 2019-2026 Space Science and Engineering Center (SSEC),
-#   University of Wisconsin-Madison.
-#
-# This file is part of the polar2grid software package.
 """Reader for VIIRS NetCDF Flood Granules."""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
+import dask.array as da
 import numpy as np
 import xarray as xr
 from pyproj import CRS
 from pyresample.geometry import SwathDefinition
 from satpy.readers.file_handlers import BaseFileHandler
+from satpy.utils import get_legacy_chunk_size
 
 logger = logging.getLogger(__name__)
+
+CHUNK_SIZE = get_legacy_chunk_size()
 
 
 class VIIRSEDRFlood(BaseFileHandler):
@@ -27,7 +26,14 @@ class VIIRSEDRFlood(BaseFileHandler):
 
     def __init__(self, filename, filename_info, filetype_info):
         super().__init__(filename, filename_info, filetype_info)
-        self.nc = xr.open_dataset(self.filename, decode_times=False, mask_and_scale=False)
+        # Open lazily with Dask chunking along 'lat' and single-chunk 'lon' (-1)
+        # matching Satpy's native VIIRS readers for fast multi-worker streaming.
+        self.nc = xr.open_dataset(
+            self.filename,
+            decode_times=False,
+            mask_and_scale=False,
+            chunks={"lat": CHUNK_SIZE, "lon": -1},
+        )
         self._cached_grid = None
 
         platform = str(
@@ -58,13 +64,14 @@ class VIIRSEDRFlood(BaseFileHandler):
         return self._parse_datetime("end_time")
 
     def _get_padded_grid(self):
-        """Build North-to-South, pixel-center-aligned 2D lat/lon grids with fill pixels masked."""
+        """Build lazy Dask 2D float32 lat/lon grids with pixel-center alignment and fill masking."""
         if self._cached_grid is not None:
             return self._cached_grid
 
         if "lat" not in self.nc or "lon" not in self.nc:
             raise NotImplementedError("Granule lacks 1D lat/lon dimensions.")
 
+        # 1D coordinate vectors are tiny (~5k-25k floats); compute exact shifts in float64
         lats = self.nc["lat"].values.astype(np.float64)
         lons = self.nc["lon"].values.astype(np.float64)
         height, width = len(lats), len(lons)
@@ -90,36 +97,47 @@ class VIIRSEDRFlood(BaseFileHandler):
             lats = lats - 0.5 * lat_res
 
         # Wrap 0..360 longitudes (e.g. 180..251.9 over Alaska) into [-180, 180)
-        # so pyresample's KD-tree maps across the antimeridian seamlessly.
         lons = ((lons + 180.0) % 360.0) - 180.0
 
-        lons_2d, lats_2d = np.meshgrid(lons, lats)
+        # Downcast 1D vectors to float32 before 2D broadcasting (halves coordinate RAM)
+        lats_f32 = np.ascontiguousarray(lats, dtype=np.float32)
+        lons_f32 = np.ascontiguousarray(lons, dtype=np.float32)
+        nan_f32 = np.float32(np.nan)
 
-        # Mask coordinates to NaN wherever WaterDetection == _FillValue (1 = no_valid_data)
-        # so empty bounding-box corners and off-nadir sub-pixel gaps are ignored by the KD-tree.
         if "WaterDetection" in self.nc:
             wd_raw = self.nc["WaterDetection"]
-            wd_vals = wd_raw.values
+            wd_data = wd_raw.data
             wd_fill = int(wd_raw.attrs.get("_FillValue", 1))
             if flip_y:
-                wd_vals = np.flip(wd_vals, axis=0)
-            invalid_mask = wd_vals == wd_fill
-            if not np.all(invalid_mask):
-                lons_2d[invalid_mask] = np.nan
-                lats_2d[invalid_mask] = np.nan
+                wd_data = wd_data[::-1, :]
 
-        # Pad X with NaNs to the widest granule in this pass so Satpy stacks along 'y'
+            row_chunks, col_chunks = wd_data.chunks
+            lats_dask = da.from_array(lats_f32, chunks=(row_chunks,))
+            lons_dask = da.from_array(lons_f32, chunks=(col_chunks,))
+            lons_2d, lats_2d = da.meshgrid(lons_dask, lats_dask)
+
+            invalid_mask = wd_data == wd_fill
+            lons_2d = da.where(invalid_mask, nan_f32, lons_2d)
+            lats_2d = da.where(invalid_mask, nan_f32, lats_2d)
+        else:
+            lats_dask = da.from_array(lats_f32, chunks=CHUNK_SIZE)
+            lons_dask = da.from_array(lons_f32, chunks=-1)
+            lons_2d, lats_2d = da.meshgrid(lons_dask, lats_dask)
+
+        # Pad X lazily with NaNs to the widest granule in this pass and keep X single-chunked
         target_width = max(self._max_width_by_platform.get(self._platform_key, width), width)
         if width < target_width:
             pad_cols = target_width - width
-            lons_2d = np.pad(lons_2d, ((0, 0), (0, pad_cols)), constant_values=np.nan)
-            lats_2d = np.pad(lats_2d, ((0, 0), (0, pad_cols)), constant_values=np.nan)
+            lons_2d = da.pad(lons_2d, ((0, 0), (0, pad_cols)), mode="constant", constant_values=nan_f32)
+            lats_2d = da.pad(lats_2d, ((0, 0), (0, pad_cols)), mode="constant", constant_values=nan_f32)
+        lons_2d = lons_2d.rechunk({1: -1})
+        lats_2d = lats_2d.rechunk({1: -1})
 
         self._cached_grid = (lats_2d, lons_2d, flip_y, target_width)
         return self._cached_grid
 
     def get_area_def(self, key):
-        """Construct SwathDefinition matching the padded 2D pixel-center coordinates."""
+        """Construct SwathDefinition backed by lazy Dask 2D coordinate arrays."""
         lats_2d, lons_2d, _, _ = self._get_padded_grid()
         height, width = lats_2d.shape
 
@@ -139,7 +157,7 @@ class VIIRSEDRFlood(BaseFileHandler):
         return swath_def
 
     def get_dataset(self, key, info):
-        """Extract granule dataset or coordinates as float32 NaN-masked 2D DataArrays."""
+        """Extract granule dataset or coordinates as lazy Dask float32 DataArrays."""
         dataset_name = key["name"]
         lats_2d, lons_2d, flip_y, target_width = self._get_padded_grid()
 
@@ -155,28 +173,32 @@ class VIIRSEDRFlood(BaseFileHandler):
             logger.warning(f"Dataset {dataset_name} not found in file {self.filename}")
             return None
 
-        raw_data = self.nc[dataset_name].load()
+        raw_data = self.nc[dataset_name]
         dims = tuple("y" if d == "lat" else "x" if d == "lon" else d for d in raw_data.dims)
-        arr = raw_data.values.astype(np.float32)
+        arr = raw_data.data.astype(np.float32)
+        nan_f32 = np.float32(np.nan)
 
         # Convert native _FillValue (1 for WaterDetection, 255 for QualityFlag) to NaN
-        # so awips_tiled masks blank space cleanly and drops empty tiles.
         orig_fill = raw_data.attrs.get("_FillValue")
         if orig_fill is not None:
-            arr = np.where(arr == float(orig_fill), np.nan, arr)
+            arr = da.where(arr == np.float32(orig_fill), nan_f32, arr)
 
-        # Flip Y if latitudes were South-to-North
+        # Flip Y lazily if latitudes were South-to-North
         if flip_y and "y" in dims:
-            arr = np.flip(arr, axis=dims.index("y"))
+            y_axis = dims.index("y")
+            slc = [slice(None)] * arr.ndim
+            slc[y_axis] = slice(None, None, -1)
+            arr = arr[tuple(slc)]
 
-        # Pad X with NaN to match target_width
+        # Pad X lazily with NaN to match target_width and keep X single-chunked
         if "x" in dims:
             x_axis = dims.index("x")
             cur_width = arr.shape[x_axis]
             if cur_width < target_width:
                 pad_spec = [(0, 0)] * arr.ndim
                 pad_spec[x_axis] = (0, target_width - cur_width)
-                arr = np.pad(arr, pad_spec, constant_values=np.nan)
+                arr = da.pad(arr, pad_spec, mode="constant", constant_values=nan_f32)
+            arr = arr.rechunk({x_axis: -1})
 
         clean_data = xr.DataArray(arr, dims=dims, name=raw_data.name)
         clean_data.encoding.clear()
